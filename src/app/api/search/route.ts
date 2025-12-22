@@ -3,6 +3,11 @@ import { MetaSearchAgentType } from '@/lib/search/metaSearchAgent';
 import { searchHandlers } from '@/lib/search';
 import ModelRegistry from '@/lib/models/registry';
 import { ModelWithProvider } from '@/lib/models/types';
+import {
+  getClientIp,
+  checkIpRateLimit,
+  incrementIpSearchCount,
+} from '@/lib/rateLimit';
 
 interface ChatRequestBody {
   optimizationMode: 'speed' | 'balanced';
@@ -13,6 +18,7 @@ interface ChatRequestBody {
   history: Array<[string, string]>;
   stream?: boolean;
   systemInstructions?: string;
+  chutesAccessToken?: string; // Optional Chutes OAuth token for authenticated users
 }
 
 export const POST = async (req: Request) => {
@@ -24,6 +30,34 @@ export const POST = async (req: Request) => {
         { message: 'Missing focus mode or query' },
         { status: 400 },
       );
+    }
+
+    // Check if user is authenticated with Chutes
+    const isAuthenticated = !!body.chutesAccessToken;
+
+    // If not authenticated, check IP-based rate limit
+    if (!isAuthenticated) {
+      const clientIp = getClientIp(req);
+      const { allowed, remaining, used } = await checkIpRateLimit(clientIp);
+
+      if (!allowed) {
+        return Response.json(
+          {
+            message: 'Free search limit reached',
+            error: 'RATE_LIMIT_EXCEEDED',
+            details: {
+              used,
+              remaining,
+              limit: 3,
+              requiresLogin: true,
+            },
+          },
+          { status: 429 },
+        );
+      }
+
+      // Increment the search count for this IP (before processing to prevent abuse)
+      await incrementIpSearchCount(clientIp);
     }
 
     body.history = body.history || [];

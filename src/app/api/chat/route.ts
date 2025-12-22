@@ -9,6 +9,11 @@ import { searchHandlers } from '@/lib/search';
 import { z } from 'zod';
 import ModelRegistry from '@/lib/models/registry';
 import { ModelWithProvider } from '@/lib/models/types';
+import {
+  getClientIp,
+  checkIpRateLimit,
+  incrementIpSearchCount,
+} from '@/lib/rateLimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -67,6 +72,7 @@ const bodySchema = z.object({
   chatModel: chatModelSchema,
   embeddingModel: embeddingModelSchema,
   systemInstructions: z.string().nullable().optional().default(''),
+  chutesAccessToken: z.string().optional(), // Optional Chutes OAuth token for authenticated users
 });
 
 type Message = z.infer<typeof messageSchema>;
@@ -253,6 +259,34 @@ export const POST = async (req: Request) => {
         },
         { status: 400 },
       );
+    }
+
+    // Check if user is authenticated with Chutes
+    const isAuthenticated = !!body.chutesAccessToken;
+
+    // If not authenticated, check IP-based rate limit
+    if (!isAuthenticated) {
+      const clientIp = getClientIp(req);
+      const { allowed, remaining, used } = await checkIpRateLimit(clientIp);
+
+      if (!allowed) {
+        return Response.json(
+          {
+            message: 'Free search limit reached',
+            error: 'RATE_LIMIT_EXCEEDED',
+            details: {
+              used,
+              remaining,
+              limit: 3,
+              requiresLogin: true,
+            },
+          },
+          { status: 429 },
+        );
+      }
+
+      // Increment the search count for this IP (before processing to prevent abuse)
+      await incrementIpSearchCount(clientIp);
     }
 
     const registry = new ModelRegistry();
